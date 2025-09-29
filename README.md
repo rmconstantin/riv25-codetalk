@@ -66,3 +66,41 @@ $ cargo lambda deploy ch01
 $ cargo lambda invoke --remote ch01 --data-ascii '{"name": "reinvent"}'
 {"greeting":"hello reinvent"}
 ```
+
+## Chapter 02
+
+Create an Aurora DSQL cluster using CDK:
+
+``` sh
+$ mkdir ch02
+$ cd ch02
+$ cdk init app --language typescript
+```
+
+Update the stack to include an Aurora DSQL cluster with no deletion protection:
+
+``` typescript
+import * as cdk from 'aws-cdk-lib';
+import * as dsql from 'aws-cdk-lib/aws-dsql';
+import { Construct } from 'constructs';
+
+export class Ch02Stack extends cdk.Stack {
+  constructor(scope: Construct, id: string, props?: cdk.StackProps) {
+    super(scope, id, props);
+
+    new dsql.CfnCluster(this, 'DsqlCluster', {
+      deletionProtectionEnabled: false,
+      tags: [{
+        key: 'Name',
+        value: 'ch02'
+      }]
+    });
+  }
+}
+```
+
+Deploy the stack:
+
+``` sh
+$ npx cdk deploy --profile YOUR_AWS_PROFILE --region us-west-2
+```
