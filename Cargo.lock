@@ -674,16 +674,12 @@ dependencies = [
 name = "ch03"
 version = "0.1.0"
 dependencies = [
- "aws-config",
- "aws-sdk-dsql",
  "lambda_runtime",
- "openssl",
- "postgres-openssl",
  "rust_decimal",
  "serde",
  "serde_json",
  "tokio",
- "tokio-postgres",
+ "tokio-postgres-dsql",
 ]
 
 [[package]]
@@ -1650,9 +1646,9 @@ checksum = "d05e27ee213611ffe7d6348b942e8f942b37114c00cc03cec254295a4a17852e"
 
 [[package]]
 name = "openssl-src"
-version = "300.5.0+3.5.0"
+version = "300.5.3+3.5.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e8ce546f549326b0e6052b649198487d91320875da901e7bd11a06d1ee3f9c2f"
+checksum = "dc6bad8cd0233b63971e232cc9c5e83039375b8586d2312f31fda85db8f888c2"
 dependencies = [
  "cc",
 ]
@@ -2460,6 +2456,26 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "55937e1799185b12863d447f42597ed69d9928686b8d88a1df17376a097d8369"
 
 [[package]]
+name = "thiserror"
+version = "2.0.17"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f63587ca0f12b72a0600bcba1d40081f830876000bb46dd2337a3051618f4fc8"
+dependencies = [
+ "thiserror-impl",
+]
+
+[[package]]
+name = "thiserror-impl"
+version = "2.0.17"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3ff15c8ecd7de3849db632e14d18d2571fa09dfc5ed93479bc4485c7a517c913"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.106",
+]
+
+[[package]]
 name = "thread_local"
 version = "1.1.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2588,6 +2604,21 @@ dependencies = [
  "tokio",
  "tokio-util",
  "whoami",
+]
+
+[[package]]
+name = "tokio-postgres-dsql"
+version = "0.1.0"
+source = "git+https://github.com/marcbowes/tokio-postgres-dsql#97cab31bc28dd2cc16d2f581f89c9950b9e9dfcf"
+dependencies = [
+ "aws-config",
+ "aws-sdk-dsql",
+ "openssl",
+ "openssl-probe",
+ "postgres-openssl",
+ "thiserror",
+ "tokio",
+ "tokio-postgres",
 ]
 
 [[package]]

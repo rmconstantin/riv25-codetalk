@@ -142,7 +142,7 @@ postgres=> \d accounts
  balance | numeric(18,6) |           |          |
 Indexes:
     "accounts_pkey" PRIMARY KEY, btree_index (id) INCLUDE (balance)
-    
+
 postgres=> insert into accounts (id, balance) values (1, 100);
 INSERT 0 1
 ```
@@ -153,76 +153,39 @@ Create a new Lambda function for connecting to Aurora DSQL:
 $ cargo lambda new --event-type serde_json::Value ch03
 ```
 
-Add dependencies for PostgreSQL connectivity and JSON handling:
+Add the `tokio-postgres-dsql` library to simplify DSQL connections:
 
 ``` sh
 $ cd ch03
-```
-
-We need to replicate what we did on the command line, using the AWS SDK. See
-https://docs.aws.amazon.com/aurora-dsql/latest/userguide/SECTION_authentication-token.html#authentication-token-sdks.
-
-``` sh
-$ cargo add aws_config --features behavior-version-latest
-$ cargo add aws_sdk_dsql --features behavior-version-latest
-$ cargo add tokio-postgres
+$ cargo add tokio-postgres-dsql --git https://github.com/marcbowes/tokio-postgres-dsql --features openssl
 $ cargo add serde --features derive
-$ cargo add openssl --features vendored
-$ cargo add postgres-openssl
 $ cargo add rust_decimal --features db-postgres
 ```
 
-``` rust
-use aws_config::{BehaviorVersion, Region};
-use aws_sdk_dsql::auth_token::{AuthTokenGenerator, Config};
-
-const ENDPOINT: &str = "YOUR_CLUSTER_ENDPOINT";
-const REGION: &str = "us-west-2";
-
-async fn generate_token(hostname: String, region: String) -> String {
-    let sdk_config = aws_config::load_defaults(BehaviorVersion::latest()).await;
-    let signer = AuthTokenGenerator::new(
-        Config::builder()
-            .hostname(&hostname)
-            .region(Region::new(region))
-            .build()
-            .unwrap(),
-    );
-
-    let token = signer
-        .db_connect_admin_auth_token(&sdk_config)
-        .await
-        .unwrap();
-    token.to_string()
-}
-```
-
-Now, we can open a connection using tokio-postgres:
+The `tokio-postgres-dsql` library handles authentication and connection management automatically:
 
 ``` rust
-use openssl::ssl::{SslConnector, SslMethod, SslVerifyMode};
-use postgres_openssl::MakeTlsConnector;
+use lambda_runtime::{Error, LambdaEvent};
 use rust_decimal::Decimal;
+use serde::{Deserialize, Serialize};
+use tokio_postgres_dsql::Opts;
+
+#[derive(Deserialize)]
+pub struct Request {
+    id: i32,
+}
+
+#[derive(Serialize)]
+pub struct Response {
+    balance: Decimal,
+}
+
+const CONNINFO: &str = "host=YOUR_CLUSTER_ENDPOINT user=admin dbname=postgres";
 
 pub(crate) async fn function_handler(event: LambdaEvent<Request>) -> Result<Response, Error> {
-    let token = generate_token(ENDPOINT.to_string(), REGION.to_string()).await;
-    let mut builder = SslConnector::builder(SslMethod::tls())?;
-    // XXX: NOT FOR PRODUCTION USE. I'm uploading binaries from my laptop, and
-    // am too lazy to use openssl-probe to detect the root CAs at runtime.
-    builder.set_verify(SslVerifyMode::NONE);
-    let connector = MakeTlsConnector::new(builder.build());
-
-    let (client, connection) = tokio_postgres::connect(
-        &format!("host={ENDPOINT} user=admin password={token} dbname=postgres sslmode=require"),
-        connector,
-    )
-    .await?;
-    
-    tokio::spawn(async move {
-        if let Err(e) = connection.await {
-            eprintln!("connection error: {}", e);
-        }
-    });
+    let opts = Opts::from_conninfo(CONNINFO).await?;
+    let mut connection = opts.connect_one().await?;
+    let client = connection.borrow().await?;
 
     let row = client
         .query_one(
@@ -234,23 +197,6 @@ pub(crate) async fn function_handler(event: LambdaEvent<Request>) -> Result<Resp
     let balance: Decimal = row.get(0);
 
     Ok(Response { balance })
-}
-```
-
-Like before, we'll make some simple request/response structs:
-
-``` rust
-use serde::{Deserialize, Serialize};
-use rust_decimal::Decimal;
-
-#[derive(Deserialize)]
-pub struct Request {
-    id: i32,
-}
-
-#[derive(Serialize)]
-pub struct Response {
-    balance: Decimal,
 }
 ```
 
