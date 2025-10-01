@@ -1,8 +1,6 @@
 use lambda_runtime::{Error, LambdaEvent};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
-use tokio::sync::Mutex;
 use tokio::time::Instant;
 use tokio_postgres_dsql::SingleConnection;
 
@@ -20,7 +18,7 @@ pub struct Response {
 }
 
 pub(crate) async fn function_handler(
-    connection: Arc<Mutex<SingleConnection>>,
+    mut connection: SingleConnection,
     event: LambdaEvent<Request>,
 ) -> Result<Response, Error> {
     let start = Instant::now();
@@ -29,8 +27,7 @@ pub(crate) async fn function_handler(
         return Err("Payer and payee must be different accounts".into());
     }
 
-    let mut connection = connection.lock().await;
-    let client = connection.borrow().await?;
+    let mut client = connection.borrow().await?;
 
     // Start transaction
     let transaction = client.transaction().await?;

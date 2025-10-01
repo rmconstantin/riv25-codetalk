@@ -6,8 +6,8 @@ use tokio_postgres_dsql::SingleConnection;
 
 #[derive(Deserialize)]
 pub struct Request {
-    payer_id: i32,
-    payee_id: i32,
+    payer_id: uuid::Uuid,
+    payee_id: uuid::Uuid,
     amount: Decimal,
 }
 
@@ -32,7 +32,7 @@ async fn execute_transfer(
     // Deduct from payer and check balance
     let row = transaction
         .query_one(
-            "UPDATE accounts SET balance = balance - $1 WHERE id = $2 RETURNING balance",
+            "UPDATE accounts2 SET balance = balance - $1 WHERE id = $2 RETURNING balance",
             &[&request.amount, &request.payer_id],
         )
         .await?;
@@ -45,7 +45,7 @@ async fn execute_transfer(
     // Add to payee
     let rows_updated = transaction
         .execute(
-            "UPDATE accounts SET balance = balance + $1 WHERE id = $2",
+            "UPDATE accounts2 SET balance = balance + $1 WHERE id = $2",
             &[&request.amount, &request.payee_id],
         )
         .await?;

@@ -3,7 +3,9 @@ use aws_sdk_lambda::Client;
 use clap::Parser;
 use rand::{rngs::StdRng, Rng, SeedableRng};
 use serde::Deserialize;
+use std::fs;
 use std::sync::Arc;
+use tokio::signal;
 use tokio::sync::Mutex;
 use tokio::task::JoinSet;
 
@@ -11,7 +13,25 @@ use tokio::task::JoinSet;
 struct Stats {
     success_count: usize,
     error_count: usize,
+    insufficient_balance_count: usize,
     total_latency_ms: f64,
+}
+
+fn print_stats(stats: &Stats, completed_count: usize) {
+    println!();
+    println!("Completed {} invocations", completed_count);
+    println!();
+    println!("Results:");
+    println!("  Success: {}", stats.success_count);
+    println!("  Errors:  {}", stats.error_count);
+    println!(
+        "  Insufficient balance: {}",
+        stats.insufficient_balance_count
+    );
+    if stats.success_count > 0 {
+        let avg_latency = stats.total_latency_ms / stats.success_count as f64;
+        println!("  Avg latency: {:.3}ms", avg_latency);
+    }
 }
 
 #[derive(Deserialize)]
@@ -37,6 +57,10 @@ struct Args {
     /// Number of accounts (1 to N)
     #[arg(long, default_value = "1000")]
     accounts: u32,
+
+    /// Use UUIDs from uuids.txt instead of integer IDs
+    #[arg(long)]
+    uuids: bool,
 }
 
 async fn run_invocations(
@@ -48,22 +72,44 @@ async fn run_invocations(
     total: usize,
     num_accounts: u32,
     stats: Arc<Mutex<Stats>>,
+    uuids: Arc<Vec<String>>,
 ) {
     let mut rng = StdRng::from_entropy();
 
     for i in start..=end {
-        // Generate random payer and payee (1-num_accounts)
-        let payer_id = rng.gen_range(1..=num_accounts);
-        let mut payee_id = rng.gen_range(1..=num_accounts);
-
-        // Make sure they're different
-        while payer_id == payee_id {
-            payee_id = rng.gen_range(1..=num_accounts);
-        }
-
-        // Random amount between 0.01 and 10.00
-        let amount: f64 = rng.gen_range(0.01..=10.00);
-        let amount = (amount * 100.0).round() / 100.0; // Round to 2 decimals
+        let (payer_id, payee_id, amount, payer_display, payee_display) = if uuids.is_empty() {
+            // Default mode: use integer IDs
+            let payer_id = rng.gen_range(1..=num_accounts);
+            let mut payee_id = rng.gen_range(1..=num_accounts);
+            while payer_id == payee_id {
+                payee_id = rng.gen_range(1..=num_accounts);
+            }
+            let amount: f64 = rng.gen_range(0.01..=10.00);
+            let amount = (amount * 100.0).round() / 100.0;
+            (
+                serde_json::json!(payer_id),
+                serde_json::json!(payee_id),
+                amount,
+                payer_id.to_string(),
+                payee_id.to_string(),
+            )
+        } else {
+            // ch06 mode: use UUIDs
+            let payer_idx = rng.gen_range(0..uuids.len());
+            let mut payee_idx = rng.gen_range(0..uuids.len());
+            while payer_idx == payee_idx {
+                payee_idx = rng.gen_range(0..uuids.len());
+            }
+            let amount: f64 = rng.gen_range(0.01..=10.00);
+            let amount = (amount * 100.0).round() / 100.0;
+            (
+                serde_json::json!(&uuids[payer_idx]),
+                serde_json::json!(&uuids[payee_idx]),
+                amount,
+                uuids[payer_idx].clone(),
+                uuids[payee_idx].clone(),
+            )
+        };
 
         // Create payload
         let payload = serde_json::json!({
@@ -91,6 +137,7 @@ async fn run_invocations(
 
                 // Try to parse the response to extract transaction_time
                 let mut is_error = false;
+                let mut is_insufficient_balance = false;
                 let mut latency_ms = 0.0;
 
                 if let Ok(success_resp) = serde_json::from_str::<SuccessResponse>(&response_payload)
@@ -103,8 +150,13 @@ async fn run_invocations(
                     }
                 } else {
                     // Check if it's an error response
-                    if response_payload.contains("errorType") || response_payload.contains("errorMessage") {
+                    if response_payload.contains("errorType")
+                        || response_payload.contains("errorMessage")
+                    {
                         is_error = true;
+                        if response_payload.contains("Insufficient balance") {
+                            is_insufficient_balance = true;
+                        }
                     }
                 }
 
@@ -112,7 +164,11 @@ async fn run_invocations(
                 {
                     let mut stats = stats.lock().await;
                     if is_error {
-                        stats.error_count += 1;
+                        if is_insufficient_balance {
+                            stats.insufficient_balance_count += 1;
+                        } else {
+                            stats.error_count += 1;
+                        }
                     } else {
                         stats.success_count += 1;
                         stats.total_latency_ms += latency_ms;
@@ -121,7 +177,7 @@ async fn run_invocations(
 
                 println!(
                     "[Thread {}: {}/{}] Transferring {} from account {} to {} => {}",
-                    thread_id, i, total, amount, payer_id, payee_id, response_payload
+                    thread_id, i, total, amount, payer_display, payee_display, response_payload
                 );
             }
             Err(e) => {
@@ -133,7 +189,7 @@ async fn run_invocations(
 
                 eprintln!(
                     "[Thread {}: {}/{}] Error transferring {} from account {} to {}: {}",
-                    thread_id, i, total, amount, payer_id, payee_id, e
+                    thread_id, i, total, amount, payer_display, payee_display, e
                 );
             }
         }
@@ -148,6 +204,25 @@ async fn main() {
         "Running {} invocations across {} thread(s)",
         args.iters, args.threads
     );
+
+    // Load UUIDs if --uuids flag is set
+    let uuids = if args.uuids {
+        let content = fs::read_to_string("uuids.txt").expect("Failed to read uuids.txt");
+        Arc::new(
+            content
+                .lines()
+                .filter(|line| !line.is_empty())
+                .map(|line| line.trim().to_string())
+                .take(args.accounts as usize)
+                .collect::<Vec<String>>(),
+        )
+    } else {
+        Arc::new(Vec::new())
+    };
+
+    if !uuids.is_empty() {
+        println!("Using {} UUIDs from uuids.txt", uuids.len());
+    }
 
     // Create AWS Lambda client
     let config = aws_config::load_defaults(BehaviorVersion::latest()).await;
@@ -176,6 +251,7 @@ async fn main() {
         let client = Arc::clone(&client);
         let function_name = args.function.clone();
         let stats = Arc::clone(&stats);
+        let uuids = Arc::clone(&uuids);
 
         tasks.spawn(async move {
             run_invocations(
@@ -187,6 +263,7 @@ async fn main() {
                 total_iters,
                 num_accounts,
                 stats,
+                uuids,
             )
             .await;
         });
@@ -194,22 +271,34 @@ async fn main() {
         start = end + 1;
     }
 
-    // Wait for all tasks to complete
-    while let Some(result) = tasks.join_next().await {
-        if let Err(e) = result {
-            eprintln!("Task failed: {}", e);
+    // Wait for all tasks to complete or handle ctrl-c
+    let mut completed = 0;
+
+    loop {
+        if tasks.is_empty() {
+            break;
+        }
+
+        tokio::select! {
+            result = tasks.join_next() => {
+                match result {
+                    Some(Ok(_)) => { completed += 1 },
+                    Some(Err(err)) => {
+                        eprintln!("Task failed: {err}");
+                    }
+                    None => unreachable!("see break statement"),
+                }
+            }
+            _ = signal::ctrl_c() => {
+                // Interrupted by ctrl-c
+                println!();
+                println!("Interrupted! Aborting remaining tasks...");
+                tasks.abort_all();
+            }
         }
     }
 
-    // Print summary
+    // All tasks completed normally
     let stats = stats.lock().await;
-    println!("Completed {} invocations", args.iters);
-    println!();
-    println!("Results:");
-    println!("  Success: {}", stats.success_count);
-    println!("  Errors:  {}", stats.error_count);
-    if stats.success_count > 0 {
-        let avg_latency = stats.total_latency_ms / stats.success_count as f64;
-        println!("  Avg latency: {:.3}ms", avg_latency);
-    }
+    print_stats(&stats, completed);
 }

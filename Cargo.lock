@@ -802,6 +802,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "ch06"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "lambda_runtime",
+ "postgres-types",
+ "rust_decimal",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-postgres",
+ "tokio-postgres-dsql",
+ "uuid",
+]
+
+[[package]]
 name = "clang-sys"
 version = "1.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2002,6 +2018,7 @@ dependencies = [
  "bytes",
  "fallible-iterator",
  "postgres-protocol",
+ "uuid",
 ]
 
 [[package]]
@@ -2821,7 +2838,7 @@ dependencies = [
 [[package]]
 name = "tokio-postgres-dsql"
 version = "0.1.0"
-source = "git+https://github.com/marcbowes/tokio-postgres-dsql#dea0347cfd13af22c207bfbbc8e338ec7de40df7"
+source = "git+https://github.com/marcbowes/tokio-postgres-dsql#712bd1298579e6188f9299e917972e505af1bfe2"
 dependencies = [
  "aws-config",
  "aws-sdk-dsql",
@@ -3086,7 +3103,9 @@ version = "1.18.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2f87b8aa10b915a06587d0dec516c282ff295b475d94abf425d62b57710070a2"
 dependencies = [
+ "getrandom 0.3.3",
  "js-sys",
+ "serde",
  "wasm-bindgen",
 ]
 

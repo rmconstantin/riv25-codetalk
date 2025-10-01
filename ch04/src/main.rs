@@ -1,6 +1,4 @@
 use lambda_runtime::{run, service_fn, tracing, Error};
-use std::sync::Arc;
-use tokio::sync::Mutex;
 use tokio_postgres_dsql::Opts;
 
 mod event_handler;
@@ -14,10 +12,9 @@ async fn main() -> Result<(), Error> {
 
     let opts = Opts::from_conninfo(CONNINFO).await?;
     let connection = opts.connect_one().await?;
-    let connection = Arc::new(Mutex::new(connection));
 
     run(service_fn(move |event| {
-        let connection = Arc::clone(&connection);
+        let connection = connection.clone();
         async move { function_handler(connection, event).await }
     }))
     .await
