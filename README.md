@@ -326,3 +326,62 @@ $ cargo run --manifest-path invoke-test/Cargo.toml -- ch04 --iters 10000 --threa
 ```
 
 The tool uses the AWS SDK for Rust to invoke the Lambda function directly, making it faster than using `cargo lambda invoke`. The `--accounts` flag controls the range of account IDs to use (1 to N).
+
+## Chapter 05
+
+Chapter 05 extends ch04 by adding automatic retry logic for optimistic concurrency control (OCC) failures. When multiple transactions conflict, DSQL returns a serialization failure error, and the application should retry the transaction.
+
+### Key Changes from Chapter 04
+
+1. **Automatic OCC retry** - Transactions that fail with serialization errors (`T_R_SERIALIZATION_FAILURE`) are automatically retried
+2. **Attempts tracking** - The response includes an `attempts` field showing how many tries were needed
+3. **Clean separation** - `execute_transfer` function contains transaction logic, retry loop handles OCC errors at commit time
+
+The retry logic uses an infinite loop that only retries on serialization failures:
+
+``` rust
+loop {
+    attempts += 1;
+    let transaction = client.transaction().await?;
+
+    let payer_balance = execute_transfer(&transaction, ...).await?;
+
+    match transaction.commit().await {
+        Ok(_) => break payer_balance,
+        Err(err) if is_occ_error(&err) => continue,
+        Err(err) => return Err(err)?,
+    }
+}
+```
+
+OCC detection uses the proper SQL state constant:
+
+``` rust
+fn is_occ_error(error: &tokio_postgres::Error) -> bool {
+    error
+        .as_db_error()
+        .map(|db_err| db_err.code() == &tokio_postgres::error::SqlState::T_R_SERIALIZATION_FAILURE)
+        .unwrap_or(false)
+}
+```
+
+Deploy and test:
+
+``` sh
+$ cargo lambda build --release --manifest-path ch05/Cargo.toml
+$ cargo lambda deploy ch05
+$ ./add-dsql-permissions.sh ch05
+$ cargo lambda invoke --remote ch05 --data-ascii '{"payer_id": 1, "payee_id": 2, "amount": 10}'
+```
+
+Compare with ch04 under load to see the difference in error rates:
+
+``` sh
+# ch04 - no retry, will show OCC errors under contention
+$ cargo run --manifest-path invoke-test/Cargo.toml -- ch04 --iters 1000 --threads 10 --accounts 10
+
+# ch05 - automatic retry, should succeed with multiple attempts
+$ cargo run --manifest-path invoke-test/Cargo.toml -- ch05 --iters 1000 --threads 10 --accounts 10
+```
+
+With low account counts and high concurrency, ch04 will show serialization failure errors while ch05 will retry and succeed, with the `attempts` field showing how many retries were needed.

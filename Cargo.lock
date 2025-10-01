@@ -88,6 +88,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "anyhow"
+version = "1.0.100"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a23eb6b1614318a8071c9b2521f36b424b2c83db5eb3a0fead4a6c0809af6e61"
+
+[[package]]
 name = "arrayvec"
 version = "0.7.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -778,6 +784,20 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+ "tokio-postgres-dsql",
+]
+
+[[package]]
+name = "ch05"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "lambda_runtime",
+ "rust_decimal",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-postgres",
  "tokio-postgres-dsql",
 ]
 
@@ -1655,7 +1675,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "07033963ba89ebaf1584d767badaa2e8fcec21aedea6b8c0346d487d49c28667"
 dependencies = [
  "cfg-if",
- "windows-targets 0.52.6",
+ "windows-targets 0.53.4",
 ]
 
 [[package]]
