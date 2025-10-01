@@ -29,15 +29,13 @@ fn is_occ_error(error: &tokio_postgres::Error) -> bool {
 
 async fn execute_transfer(
     transaction: &tokio_postgres::Transaction<'_>,
-    payer_id: i32,
-    payee_id: i32,
-    amount: Decimal,
+    request: &Request,
 ) -> anyhow::Result<Decimal> {
     // Deduct from payer and check balance
     let row = transaction
         .query_one(
             "UPDATE accounts SET balance = balance - $1 WHERE id = $2 RETURNING balance",
-            &[&amount, &payer_id],
+            &[&request.amount, &request.payer_id],
         )
         .await?;
 
@@ -50,7 +48,7 @@ async fn execute_transfer(
     let rows_updated = transaction
         .execute(
             "UPDATE accounts SET balance = balance + $1 WHERE id = $2",
-            &[&amount, &payee_id],
+            &[&request.amount, &request.payee_id],
         )
         .await?;
 
@@ -79,14 +77,7 @@ pub(crate) async fn function_handler(
     let payer_balance = loop {
         attempts += 1;
         let transaction = client.transaction().await?;
-
-        let payer_balance = execute_transfer(
-            &transaction,
-            event.payload.payer_id,
-            event.payload.payee_id,
-            event.payload.amount,
-        )
-        .await?;
+        let payer_balance = execute_transfer(&transaction, &event.payload).await?;
 
         match transaction.commit().await {
             Ok(_) => break payer_balance,
