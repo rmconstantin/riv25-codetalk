@@ -13,6 +13,14 @@ Follow the instructions at
 https://docs.aws.amazon.com/lambda/latest/dg/rust-package.html#rust-package-build
 for how to build Rust packages on your operating system.
 
+**Note:** After deploying Lambda functions that connect to DSQL (ch03 and ch04), you'll need to add IAM permissions using the `add-dsql-permissions.sh` script:
+
+``` sh
+$ ./add-dsql-permissions.sh <function-name>
+```
+
+This grants the Lambda function the `dsql:DbConnect` and `dsql:DbConnectAdmin` permissions needed to authenticate with Aurora DSQL.
+
 ## Chapter 01
 
 First, we're going to build a Lambda function:
@@ -205,5 +213,116 @@ Deploy and invoke the function:
 ``` sh
 $ cargo lambda build --release
 $ cargo lambda deploy ch03
+$ ./add-dsql-permissions.sh ch03
 $ cargo lambda invoke --remote ch03 --data-ascii '{"id": 1}'
 ```
+
+## Chapter 04
+
+Now we'll implement a money transfer function with transactions. This chapter demonstrates connection reuse and transaction safety.
+
+### Step 1: Reuse the connection
+
+Instead of creating a new connection for each invocation, we'll create the connection once in `main.rs` and reuse it across Lambda invocations. This significantly improves performance by avoiding connection overhead.
+
+Wrap the connection in `Arc<Mutex<SingleConnection>>` and pass it to the handler:
+
+``` rust
+let opts = Opts::from_conninfo(CONNINFO).await?;
+let connection = opts.connect_one().await?;
+let connection = Arc::new(Mutex::new(connection));
+
+run(service_fn(move |event| {
+    let connection = Arc::clone(&connection);
+    async move { function_handler(connection, event).await }
+}))
+.await
+```
+
+### Step 2: Change the API types
+
+Update the request to accept transfer parameters and the response to return transaction results:
+
+``` rust
+#[derive(Deserialize)]
+pub struct Request {
+    payer_id: i32,
+    payee_id: i32,
+    amount: Decimal,
+}
+
+#[derive(Serialize)]
+pub struct Response {
+    payer_balance: Decimal,
+    transaction_time: String,
+}
+```
+
+### Step 3: Implement the transaction
+
+The transfer uses a PostgreSQL transaction with safety checks:
+
+``` sql
+-- Start transaction
+BEGIN;
+
+-- Deduct from payer and return new balance
+UPDATE accounts SET balance = balance - $amount WHERE id = $payer_id RETURNING balance;
+
+-- Add to payee
+UPDATE accounts SET balance = balance + $amount WHERE id = $payee_id;
+
+-- Commit transaction
+COMMIT;
+```
+
+**Safety checks:**
+- Check that exactly 1 row was updated for the payee (validates payee exists)
+- Check that the payer's balance is not negative after the deduction
+- If either check fails, return an error and the transaction is automatically rolled back
+- Use `tokio::time::Instant` to measure the transaction duration
+
+### Step 4: Populate the database
+
+Use the `setup.sql` script to create test data:
+
+``` sql
+DELETE FROM accounts;
+
+INSERT INTO accounts (id, balance)
+SELECT generate_series(1, 1000), 100;
+```
+
+This creates 1000 accounts (IDs 1-1000), each with a balance of 100.
+
+Run the script:
+
+``` sh
+$ psql < ch04/setup.sql
+```
+
+Deploy and test:
+
+``` sh
+$ cargo lambda build --release --manifest-path ch04/Cargo.toml
+$ cargo lambda deploy ch04
+$ ./add-dsql-permissions.sh ch04
+$ cargo lambda invoke --remote ch04 --data-ascii '{"payer_id": 1, "payee_id": 2, "amount": 10}'
+```
+
+### Load testing
+
+Use the `invoke-test` tool to run load tests against the Lambda function:
+
+``` sh
+# Run with defaults (1000 iterations, 1 thread, 1000 accounts)
+$ cargo run --manifest-path invoke-test/Cargo.toml -- ch04
+
+# Run 500 iterations across 5 threads
+$ cargo run --manifest-path invoke-test/Cargo.toml -- ch04 --iters 500 --threads 5
+
+# Run 10,000 iterations across 10 threads with 100 accounts
+$ cargo run --manifest-path invoke-test/Cargo.toml -- ch04 --iters 10000 --threads 10 --accounts 100
+```
+
+The tool uses the AWS SDK for Rust to invoke the Lambda function directly, making it faster than using `cargo lambda invoke`. The `--accounts` flag controls the range of account IDs to use (1 to N).
