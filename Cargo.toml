@@ -1,3 +1,0 @@
-[workspace]
-members = ["ch01", "ch03", "ch04", "ch05", "ch06", "invoke-test"]
-resolver = "2"

@@ -4,74 +4,99 @@ In this live coding session, we'll show you how to work with Amazon Aurora DSQL 
 
 ## Prerequisites
 
-- Rust toolchain
-- Node.js and npm
+- Node.js 20+ and npm
 - AWS CDK CLI (`npm install -g aws-cdk`)
 - AWS credentials configured
+- PostgreSQL client (`psql`) for database operations
 
-Follow the instructions at
-https://docs.aws.amazon.com/lambda/latest/dg/rust-package.html#rust-package-build
-for how to build Rust packages on your operating system.
+## Project Structure
 
-**Note:** After deploying Lambda functions that connect to DSQL (ch03 and ch04), you'll need to add IAM permissions using the `add-dsql-permissions.sh` script:
+Each chapter (except ch02) contains two subdirectories:
+- `cdk/` - AWS CDK infrastructure code for deploying the Lambda function
+- `lambda/` - Lambda function source code
 
-``` sh
-$ ./add-dsql-permissions.sh <function-name>
+```
+ch01/
+├── cdk/          # CDK app for deploying ch01 Lambda
+└── lambda/       # Lambda function code
+    └── src/
+        └── index.ts
+
+ch03/
+├── cdk/          # CDK app with DSQL permissions
+└── lambda/       # Lambda function code
+    └── src/
+        └── index.ts
 ```
 
-This grants the Lambda function the `dsql:DbConnect` and `dsql:DbConnectAdmin` permissions needed to authenticate with Aurora DSQL.
+## Quick Start
+
+To deploy any chapter:
+
+``` sh
+# Install dependencies
+$ npm install
+
+# Deploy a chapter (e.g., ch01)
+$ cd ch01/cdk
+$ npm run cdk deploy
+
+# For chapters with DSQL (ch03-ch06), provide cluster endpoint
+$ export CLUSTER_ENDPOINT=your-cluster-id.dsql.us-west-2.on.aws
+$ cd ch03/cdk
+$ npm run cdk deploy -- -c clusterEndpoint=$CLUSTER_ENDPOINT
+
+# Test the Lambda function
+$ aws lambda invoke --function-name ch01 --payload '{"name": "reinvent"}' response.json
+$ cat response.json
+```
 
 ## Chapter 01
 
 First, we're going to build a Lambda function:
 
 ``` sh
-$ cargo lambda new ch01
-> Is this function an HTTP function? No
-> Event type that this function receives serde_json::Value
+$ mkdir -p ch01/src
+$ cd ch01
+$ npm init -y
 ```
+
+Create a simple Lambda function that returns a greeting:
+
+``` typescript
+// src/index.ts
+import { Handler } from 'aws-lambda';
+
+interface Request {
+  name: string;
+}
+
+interface Response {
+  greeting: string;
+}
+
+export const handler: Handler<Request, Response> = async (event) => {
+  const name = event.name;
+
+  return {
+    greeting: `hello ${name}`
+  };
+};
+```
+
+Build and deploy:
 
 ``` sh
-cargo lambda deploy ch01
-cargo lambda invoke --remote ch01 --data-ascii '{"key": "value"}'
-```
-
-Now, update this function to return a greeting. We're going to use `serde`
-(`cargo add serde --features derive`) to serialize and deserialize JSON:
-
-``` rust
-use lambda_runtime::{Error, LambdaEvent};
-use serde::{Deserialize, Serialize};
-
-#[derive(Deserialize)]
-pub struct Request {
-    name: String,
-}
-
-#[derive(Serialize)]
-pub struct Response {
-    greeting: String,
-}
-
-/// This is the main body for the function.
-/// Write your code inside it.
-/// There are some code example in the following URLs:
-/// - https://github.com/awslabs/aws-lambda-rust-runtime/tree/main/examples
-/// - https://github.com/aws-samples/serverless-rust-demo/
-pub(crate) async fn function_handler(event: LambdaEvent<Request>) -> Result<Response, Error> {
-    let name = event.payload.name;
-
-    Ok(Response {
-        greeting: format!("hello {name}"),
-    })
-}
-```
-
-Deploy and invoke the function:
-
-``` sh
-$ cargo lambda deploy ch01
-$ cargo lambda invoke --remote ch01 --data-ascii '{"name": "reinvent"}'
+$ npm run build
+$ npm run package
+$ aws lambda create-function \
+  --function-name ch01 \
+  --runtime nodejs20.x \
+  --role <your-lambda-role-arn> \
+  --handler index.handler \
+  --zip-file fileb://function.zip
+$ aws lambda invoke --function-name ch01 --payload '{"name": "reinvent"}' response.json
+$ cat response.json
 {"greeting":"hello reinvent"}
 ```
 
@@ -122,8 +147,7 @@ The deployment will output the cluster ID, which you'll need for connecting to t
 
 ## Chapter 03
 
-We're going to connect to the cluster from our Lambda function. Let's first
-connect from the command line:
+We're going to connect to the cluster from our Lambda function. Let's first connect from the command line:
 
 ``` sh
 export PGUSER=admin
@@ -158,63 +182,108 @@ INSERT 0 1
 Create a new Lambda function for connecting to Aurora DSQL:
 
 ``` sh
-$ cargo lambda new --event-type serde_json::Value ch03
-```
-
-Add the `tokio-postgres-dsql` library to simplify DSQL connections:
-
-``` sh
+$ mkdir -p ch03/src
 $ cd ch03
-$ cargo add tokio-postgres-dsql --git https://github.com/marcbowes/tokio-postgres-dsql --features openssl
-$ cargo add serde --features derive
-$ cargo add rust_decimal --features db-postgres
 ```
 
-The `tokio-postgres-dsql` library handles authentication and connection management automatically:
-
-``` rust
-use lambda_runtime::{Error, LambdaEvent};
-use rust_decimal::Decimal;
-use serde::{Deserialize, Serialize};
-use tokio_postgres_dsql::Opts;
-
-#[derive(Deserialize)]
-pub struct Request {
-    id: i32,
-}
-
-#[derive(Serialize)]
-pub struct Response {
-    balance: Decimal,
-}
-
-const CONNINFO: &str = "host=YOUR_CLUSTER_ENDPOINT user=admin dbname=postgres";
-
-pub(crate) async fn function_handler(event: LambdaEvent<Request>) -> Result<Response, Error> {
-    let opts = Opts::from_conninfo(CONNINFO).await?;
-    let mut connection = opts.connect_one().await?;
-    let client = connection.borrow().await?;
-
-    let row = client
-        .query_one(
-            "SELECT balance FROM accounts WHERE id = $1",
-            &[&event.payload.id],
-        )
-        .await?;
-
-    let balance: Decimal = row.get(0);
-
-    Ok(Response { balance })
-}
-```
-
-Deploy and invoke the function:
+Install dependencies:
 
 ``` sh
-$ cargo lambda build --release
-$ cargo lambda deploy ch03
+$ npm install @aws-sdk/dsql-signer postgres
+$ npm install -D @types/node typescript
+```
+
+Create the connection code using `postgres-js` and the AWS DSQL Signer:
+
+``` typescript
+// src/index.ts
+import { Handler } from 'aws-lambda';
+import { DsqlSigner } from '@aws-sdk/dsql-signer';
+import postgres from 'postgres';
+
+interface Request {
+  id: number;
+}
+
+interface Response {
+  balance: string;
+}
+
+const CLUSTER_ENDPOINT = process.env.CLUSTER_ENDPOINT || 'YOUR_CLUSTER_ENDPOINT';
+const REGION = process.env.REGION || 'us-west-2';
+const USER = 'admin';
+
+async function getPasswordToken(clusterEndpoint: string, user: string, region: string): Promise<string> {
+  const signer = new DsqlSigner({
+    hostname: clusterEndpoint,
+    region,
+  });
+
+  if (user === 'admin') {
+    return await signer.getDbConnectAdminAuthToken();
+  } else {
+    signer.username = user;
+    return await signer.getDbConnectAuthToken();
+  }
+}
+
+async function getConnection(clusterEndpoint: string, user: string, region: string) {
+  const client = postgres({
+    host: clusterEndpoint,
+    user: user,
+    password: async () => await getPasswordToken(clusterEndpoint, user, region),
+    database: 'postgres',
+    port: 5432,
+    idle_timeout: 2,
+    ssl: {
+      rejectUnauthorized: true,
+    }
+  });
+
+  return client;
+}
+
+export const handler: Handler<Request, Response> = async (event) => {
+  let client;
+
+  try {
+    client = await getConnection(CLUSTER_ENDPOINT, USER, REGION);
+
+    const rows = await client`
+      SELECT balance FROM accounts WHERE id = ${event.id}
+    `;
+
+    if (rows.length === 0) {
+      throw new Error(`Account ${event.id} not found`);
+    }
+
+    const balance = rows[0].balance;
+
+    return {
+      balance: balance.toString()
+    };
+  } catch (error) {
+    console.error('Error:', error);
+    throw error;
+  } finally {
+    await client?.end();
+  }
+};
+```
+
+Build and deploy the function:
+
+``` sh
+$ npm run build
+$ npm run package
+$ aws lambda update-function-code --function-name ch03 --zip-file fileb://function.zip
+$ aws lambda invoke --function-name ch03 --payload '{"id": 1}' response.json
+```
+
+**Note:** After deploying Lambda functions that connect to DSQL, you'll need to add IAM permissions using the `add-dsql-permissions.sh` script:
+
+``` sh
 $ ./add-dsql-permissions.sh ch03
-$ cargo lambda invoke --remote ch03 --data-ascii '{"id": 1}'
 ```
 
 ## Chapter 04
@@ -223,38 +292,41 @@ Now we'll implement a money transfer function with transactions. This chapter de
 
 ### Step 1: Reuse the connection
 
-Instead of creating a new connection for each invocation, we'll create the connection once in `main.rs` and reuse it across Lambda invocations. This significantly improves performance by avoiding connection overhead.
+Instead of creating a new connection for each invocation, we'll create a cached connection that gets reused across Lambda invocations. This significantly improves performance by avoiding connection overhead.
 
-Wrap the connection in `Arc<Mutex<SingleConnection>>` and pass it to the handler:
+Store the connection in a module-level variable:
 
-``` rust
-let opts = Opts::from_conninfo(CONNINFO).await?;
-let connection = opts.connect_one().await?;
-let connection = Arc::new(Mutex::new(connection));
+``` typescript
+// Connection reuse - create once and reuse across invocations
+let cachedClient: Sql | null = null;
 
-run(service_fn(move |event| {
-    let connection = Arc::clone(&connection);
-    async move { function_handler(connection, event).await }
-}))
-.await
+async function getConnection(clusterEndpoint: string, user: string, region: string): Promise<Sql> {
+  if (cachedClient) {
+    return cachedClient;
+  }
+
+  cachedClient = postgres({
+    // ... connection config
+  });
+
+  return cachedClient;
+}
 ```
 
 ### Step 2: Change the API types
 
 Update the request to accept transfer parameters and the response to return transaction results:
 
-``` rust
-#[derive(Deserialize)]
-pub struct Request {
-    payer_id: i32,
-    payee_id: i32,
-    amount: Decimal,
+``` typescript
+interface Request {
+  payer_id: number;
+  payee_id: number;
+  amount: string;
 }
 
-#[derive(Serialize)]
-pub struct Response {
-    payer_balance: Decimal,
-    transaction_time: String,
+interface Response {
+  payer_balance: string;
+  transaction_time: string;
 }
 ```
 
@@ -262,25 +334,48 @@ pub struct Response {
 
 The transfer uses a PostgreSQL transaction with safety checks:
 
-``` sql
--- Start transaction
-BEGIN;
+``` typescript
+// Begin transaction and execute transfer
+const result = await client.begin(async (sql) => {
+  // Deduct from payer and check balance
+  const payerRows = await sql`
+    UPDATE accounts
+    SET balance = balance - ${event.amount}
+    WHERE id = ${event.payer_id}
+    RETURNING balance
+  `;
 
--- Deduct from payer and return new balance
-UPDATE accounts SET balance = balance - $amount WHERE id = $payer_id RETURNING balance;
+  if (payerRows.length === 0) {
+    throw new Error('Payer account not found');
+  }
 
--- Add to payee
-UPDATE accounts SET balance = balance + $amount WHERE id = $payee_id;
+  const payerBalance = parseFloat(payerRows[0].balance);
+  if (payerBalance < 0) {
+    throw new Error(`Insufficient balance: ${payerBalance}`);
+  }
 
--- Commit transaction
-COMMIT;
+  // Add to payee
+  const payeeResult = await sql`
+    UPDATE accounts
+    SET balance = balance + ${event.amount}
+    WHERE id = ${event.payee_id}
+  `;
+
+  if (payeeResult.count !== 1) {
+    throw new Error('Payee account not found');
+  }
+
+  return {
+    payer_balance: payerBalance.toString()
+  };
+});
 ```
 
 **Safety checks:**
 - Check that exactly 1 row was updated for the payee (validates payee exists)
 - Check that the payer's balance is not negative after the deduction
-- If either check fails, return an error and the transaction is automatically rolled back
-- Use `tokio::time::Instant` to measure the transaction duration
+- If either check fails, throw an error and the transaction is automatically rolled back
+- Use `Date.now()` to measure the transaction duration
 
 ### Step 4: Populate the database
 
@@ -304,28 +399,13 @@ $ psql < ch04/setup.sql
 Deploy and test:
 
 ``` sh
-$ cargo lambda build --release --manifest-path ch04/Cargo.toml
-$ cargo lambda deploy ch04
+$ cd ch04
+$ npm run build
+$ npm run package
+$ aws lambda update-function-code --function-name ch04 --zip-file fileb://function.zip
 $ ./add-dsql-permissions.sh ch04
-$ cargo lambda invoke --remote ch04 --data-ascii '{"payer_id": 1, "payee_id": 2, "amount": 10}'
+$ aws lambda invoke --function-name ch04 --payload '{"payer_id": 1, "payee_id": 2, "amount": "10"}' response.json
 ```
-
-### Load testing
-
-Use the `invoke-test` tool to run load tests against the Lambda function:
-
-``` sh
-# Run with defaults (1000 iterations, 1 thread, 1000 accounts)
-$ cargo run --manifest-path invoke-test/Cargo.toml -- ch04
-
-# Run 500 iterations across 5 threads
-$ cargo run --manifest-path invoke-test/Cargo.toml -- ch04 --iters 500 --threads 5
-
-# Run 10,000 iterations across 10 threads with 100 accounts
-$ cargo run --manifest-path invoke-test/Cargo.toml -- ch04 --iters 10000 --threads 10 --accounts 100
-```
-
-The tool uses the AWS SDK for Rust to invoke the Lambda function directly, making it faster than using `cargo lambda invoke`. The `--accounts` flag controls the range of account IDs to use (1 to N).
 
 ## Chapter 05
 
@@ -333,58 +413,60 @@ Chapter 05 extends ch04 by adding automatic retry logic for optimistic concurren
 
 ### Key Changes from Chapter 04
 
-1. **Automatic OCC retry** - Transactions that fail with serialization errors (`T_R_SERIALIZATION_FAILURE`) are automatically retried
+1. **Automatic OCC retry** - Transactions that fail with serialization errors (code `40001`) are automatically retried
 2. **Attempts tracking** - The response includes an `attempts` field showing how many tries were needed
-3. **Clean separation** - `execute_transfer` function contains transaction logic, retry loop handles OCC errors at commit time
+3. **Clean separation** - `executeTransfer` function contains transaction logic, retry loop handles OCC errors at commit time
 
 The retry logic uses an infinite loop that only retries on serialization failures:
 
-``` rust
-loop {
-    attempts += 1;
-    let transaction = client.transaction().await?;
+``` typescript
+// Retry loop for OCC failures
+let attempts = 0;
+let payerBalance: string;
 
-    let payer_balance = execute_transfer(&transaction, ...).await?;
+while (true) {
+  attempts++;
 
-    match transaction.commit().await {
-        Ok(_) => break payer_balance,
-        Err(err) if is_occ_error(&err) => continue,
-        Err(err) => return Err(err)?,
+  try {
+    // Execute transaction with retry on OCC error
+    payerBalance = await client.begin(async (sql) => {
+      return await executeTransfer(sql, event);
+    });
+
+    // Transaction committed successfully
+    break;
+  } catch (error) {
+    // Check if this is an OCC error (serialization failure)
+    if (isOccError(error)) {
+      // Retry on OCC error
+      continue;
     }
+
+    // For non-OCC errors, rethrow
+    throw error;
+  }
 }
 ```
 
-OCC detection uses the proper SQL state constant:
+OCC detection checks the PostgreSQL error code:
 
-``` rust
-fn is_occ_error(error: &tokio_postgres::Error) -> bool {
-    error
-        .as_db_error()
-        .map(|db_err| db_err.code() == &tokio_postgres::error::SqlState::T_R_SERIALIZATION_FAILURE)
-        .unwrap_or(false)
+``` typescript
+function isOccError(error: any): boolean {
+  // PostgreSQL serialization failure error code
+  return error?.code === '40001';
 }
 ```
 
 Deploy and test:
 
 ``` sh
-$ cargo lambda build --release --manifest-path ch05/Cargo.toml
-$ cargo lambda deploy ch05
+$ cd ch05
+$ npm run build
+$ npm run package
+$ aws lambda update-function-code --function-name ch05 --zip-file fileb://function.zip
 $ ./add-dsql-permissions.sh ch05
-$ cargo lambda invoke --remote ch05 --data-ascii '{"payer_id": 1, "payee_id": 2, "amount": 10}'
+$ aws lambda invoke --function-name ch05 --payload '{"payer_id": 1, "payee_id": 2, "amount": "10"}' response.json
 ```
-
-Compare with ch04 under load to see the difference in error rates:
-
-``` sh
-# ch04 - no retry, will show OCC errors under contention
-$ cargo run --manifest-path invoke-test/Cargo.toml -- ch04 --iters 1000 --threads 10 --accounts 10
-
-# ch05 - automatic retry, should succeed with multiple attempts
-$ cargo run --manifest-path invoke-test/Cargo.toml -- ch05 --iters 1000 --threads 10 --accounts 10
-```
-
-With low account counts and high concurrency, ch04 will show serialization failure errors while ch05 will retry and succeed, with the `attempts` field showing how many retries were needed.
 
 ## Chapter 06
 
@@ -393,7 +475,7 @@ Chapter 06 extends ch05 by switching from integer account IDs to UUIDs, which wi
 ### Key Changes from Chapter 05
 
 1. **UUID primary keys** - Uses `UUID` type with `gen_random_uuid()` default
-2. **Serde UUID support** - Request struct uses `uuid::Uuid` type directly
+2. **String UUIDs** - Request struct uses string type for UUID fields
 3. **New table** - Creates `accounts2` table with UUID IDs
 
 ### Database Setup
@@ -426,45 +508,25 @@ CREATE TABLE accounts2 (
 
 ### Code Changes
 
-The Request struct now uses `uuid::Uuid` directly (enabled by the `serde` feature):
+The Request interface now uses string for UUID fields:
 
-``` rust
-#[derive(Deserialize)]
-pub struct Request {
-    payer_id: uuid::Uuid,  // Changed from String
-    payee_id: uuid::Uuid,  // Changed from String
-    amount: Decimal,
+``` typescript
+interface Request {
+  payer_id: string;  // UUID
+  payee_id: string;  // UUID
+  amount: string;
 }
 ```
 
-The UUIDs are automatically deserialized from JSON and can be used directly in SQL queries without manual parsing.
-
-### Load Testing with UUIDs
-
-Use the `--uuids` flag with invoke-test to load UUIDs from `uuids.txt`:
-
-``` sh
-# Run with UUIDs (uses first 1000 UUIDs from uuids.txt)
-$ cargo run --manifest-path invoke-test/Cargo.toml -- ch06 --uuids
-
-# Run with specific number of accounts
-$ cargo run --manifest-path invoke-test/Cargo.toml -- ch06 --uuids --accounts 100
-
-# Run with high concurrency
-$ cargo run --manifest-path invoke-test/Cargo.toml -- ch06 --uuids --iters 10000 --threads 10 --accounts 50
-```
-
-The tool:
-- Loads UUIDs from `uuids.txt` (generated by `setup.sh`)
-- Uses the first N UUIDs based on `--accounts` parameter
-- Tracks insufficient balance errors separately from other errors
-- Reports success, errors, insufficient balance, and average latency
+The UUIDs are passed as strings and postgres-js handles the conversion automatically.
 
 Deploy and test:
 
 ``` sh
-$ cargo lambda build --release --manifest-path ch06/Cargo.toml
-$ cargo lambda deploy ch06
+$ cd ch06
+$ npm run build
+$ npm run package
+$ aws lambda update-function-code --function-name ch06 --zip-file fileb://function.zip
 $ ./add-dsql-permissions.sh ch06
-$ cargo lambda invoke --remote ch06 --data-ascii '{"payer_id": "123e4567-e89b-12d3-a456-426614174000", "payee_id": "123e4567-e89b-12d3-a456-426614174001", "amount": 10}'
+$ aws lambda invoke --function-name ch06 --payload '{"payer_id": "123e4567-e89b-12d3-a456-426614174000", "payee_id": "123e4567-e89b-12d3-a456-426614174001", "amount": "10"}' response.json
 ```
