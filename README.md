@@ -53,12 +53,51 @@ $ cat response.json
 
 ## Chapter 01
 
-First, we're going to build a Lambda function:
+First, we're going to build a Lambda function.
+
+Initialize the project:
 
 ``` sh
-$ mkdir -p ch01/src
-$ cd ch01
+# Create project directory
+$ mkdir lambda
+$ cd lambda
+
+# Initialize npm project
 $ npm init -y
+
+# Install dependencies
+$ npm install @types/aws-lambda
+
+# Install dev dependencies
+$ npm install -D typescript @types/node
+
+# Create TypeScript config with proper settings
+$ npx tsc --init \
+  --target ES2022 \
+  --module commonjs \
+  --lib ES2022 \
+  --outDir ./dist \
+  --rootDir ./src \
+  --strict \
+  --esModuleInterop \
+  --skipLibCheck \
+  --forceConsistentCasingInFileNames \
+  --resolveJsonModule \
+  --moduleResolution node
+
+# Create source directory
+$ mkdir src
+```
+
+Add build scripts to `package.json`:
+
+``` json
+{
+  "scripts": {
+    "build": "tsc",
+    "clean": "rm -rf dist"
+  }
+}
 ```
 
 Create a simple Lambda function that returns a greeting:
@@ -84,21 +123,146 @@ export const handler: Handler<Request, Response> = async (event) => {
 };
 ```
 
-Build and deploy:
+Build the Lambda function:
 
 ``` sh
 $ npm run build
-$ npm run package
-$ aws lambda create-function \
-  --function-name ch01 \
-  --runtime nodejs20.x \
-  --role <your-lambda-role-arn> \
-  --handler index.handler \
-  --zip-file fileb://function.zip
-$ aws lambda invoke --function-name ch01 --payload '{"name": "reinvent"}' response.json
-$ cat response.json
+```
+
+Now create a CDK project to deploy the Lambda:
+
+``` sh
+# Go back to parent directory
+$ cd ..
+
+# Create CDK directory
+$ mkdir cdk
+$ cd cdk
+
+# Initialize CDK app
+$ npx cdk init app --language typescript
+
+# Install esbuild for local bundling (avoids Docker)
+$ npm install --save-dev esbuild
+```
+
+Update `lib/cdk-stack.ts` to deploy your Lambda function:
+
+``` typescript
+import * as cdk from 'aws-cdk-lib';
+import * as lambda from 'aws-cdk-lib/aws-lambda';
+import * as nodejs from 'aws-cdk-lib/aws-lambda-nodejs';
+import { Construct } from 'constructs';
+import * as path from 'path';
+
+export class CdkStack extends cdk.Stack {
+  constructor(scope: Construct, id: string, props?: cdk.StackProps) {
+    super(scope, id, props);
+
+    const lambdaFunction = new nodejs.NodejsFunction(this, 'DemoFunction', {
+      runtime: lambda.Runtime.NODEJS_20_X,
+      entry: path.join(__dirname, '../../lambda/src/index.ts'),
+      handler: 'handler',
+      functionName: 'demo',
+      timeout: cdk.Duration.seconds(30),
+      memorySize: 512,
+    });
+
+    new cdk.CfnOutput(this, 'FunctionName', {
+      value: lambdaFunction.functionName,
+      description: 'Lambda Function Name'
+    });
+  }
+}
+```
+
+Update `bin/cdk.ts` to use a unique stack name:
+
+``` typescript
+new CdkStack(app, 'LambdaDemoStack', {
+  env: {
+    account: process.env.CDK_DEFAULT_ACCOUNT,
+    region: process.env.CDK_DEFAULT_REGION
+  }
+});
+```
+
+Deploy with CDK:
+
+``` sh
+# Bootstrap CDK (only needed once per account/region)
+$ npx cdk bootstrap
+
+# Deploy the stack
+$ npx cdk deploy
+```
+
+Test the Lambda function:
+
+``` sh
+$ aws lambda invoke --function-name demo \
+  --cli-binary-format raw-in-base64-out \
+  --payload '{"name":"reinvent"}' \
+  /tmp/response.json
+$ cat /tmp/response.json
 {"greeting":"hello reinvent"}
 ```
+
+## Add Aurora DSQL Cluster
+
+Now let's add a DSQL cluster to the same stack. Update `lib/cdk-stack.ts`:
+
+``` typescript
+import * as cdk from 'aws-cdk-lib';
+import * as lambda from 'aws-cdk-lib/aws-lambda';
+import * as nodejs from 'aws-cdk-lib/aws-lambda-nodejs';
+import * as dsql from 'aws-cdk-lib/aws-dsql';  // ← Add this import
+import { Construct } from 'constructs';
+import * as path from 'path';
+
+export class CdkStack extends cdk.Stack {
+  constructor(scope: Construct, id: string, props?: cdk.StackProps) {
+    super(scope, id, props);
+
+    // Create DSQL cluster
+    const cluster = new dsql.CfnCluster(this, 'DsqlCluster', {
+      deletionProtectionEnabled: false,
+    });
+
+    const lambdaFunction = new nodejs.NodejsFunction(this, 'DemoFunction', {
+      runtime: lambda.Runtime.NODEJS_20_X,
+      entry: path.join(__dirname, '../../lambda/src/index.ts'),
+      handler: 'handler',
+      functionName: 'demo',
+      timeout: cdk.Duration.seconds(30),
+      memorySize: 512,
+    });
+
+    new cdk.CfnOutput(this, 'FunctionName', {
+      value: lambdaFunction.functionName,
+      description: 'Lambda Function Name'
+    });
+
+    new cdk.CfnOutput(this, 'ClusterEndpoint', {
+      value: `${cluster.attrIdentifier}.dsql.${this.region}.on.aws`,
+      description: 'DSQL Cluster Endpoint'
+    });
+
+    new cdk.CfnOutput(this, 'ClusterId', {
+      value: cluster.attrIdentifier,
+      description: 'DSQL Cluster ID'
+    });
+  }
+}
+```
+
+Deploy the updated stack:
+
+``` sh
+$ npx cdk deploy
+```
+
+The deployment will output the cluster endpoint. Save this for connecting later!
 
 ## Chapter 02
 
