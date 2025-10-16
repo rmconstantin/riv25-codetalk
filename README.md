@@ -810,7 +810,7 @@ $ aws lambda invoke --function-name ch07 \
 
 1. **Index selectivity**: Leading with the most selective column improves performance
 2. **Covering indexes**: Including all needed columns enables index-only scans
-3. **DSQL query planner**: EXPLAIN ANALYZE rovides detailed execution plans with actual timing and row counts
+3. **DSQL query planner**: EXPLAIN ANALYZE provides detailed execution plans with actual timing and row counts
 4. **Composite indexes**: Column order significantly affects performance
 
 The response includes execution time, rows returned, and detailed query plans showing the optimization impact.
